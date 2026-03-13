@@ -104,7 +104,7 @@ async function main() {
         permissions: {
           canManageMembers: false,
           canManageTasks: true,
-          canViewLocation: false,
+          canViewLocation: true,
           canPost: true
         }
       }

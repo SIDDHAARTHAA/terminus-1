@@ -146,6 +146,29 @@ def permission_flag(membership: dict, key: str, context: str) -> bool:
     return value
 
 
+def assert_memberships_shape(memberships: Any, context: str) -> None:
+    if not isinstance(memberships, list) or not memberships:
+        fail(f"{context} memberships payload is not a non-empty list: {memberships}")
+
+    required_permission_flags = ("canManageTasks", "canPost", "canViewLocation")
+    for index, membership in enumerate(memberships):
+        label = f"{context} membership[{index}]"
+        if not isinstance(membership, dict):
+            fail(f"{label} is not an object: {membership}")
+        family_id = membership.get("familyId")
+        role = membership.get("role")
+        if not isinstance(family_id, str) or not family_id:
+            fail(f"{label} missing non-empty familyId: {membership}")
+        if not isinstance(role, str) or not role:
+            fail(f"{label} missing non-empty role: {membership}")
+        permissions = membership.get("permissions")
+        if not isinstance(permissions, dict):
+            fail(f"{label} missing permissions object: {membership}")
+        for key in required_permission_flags:
+            if not isinstance(permissions.get(key), bool):
+                fail(f"{label} missing boolean permission {key}: {membership}")
+
+
 def find_seeded_family(
     *,
     token: str,
@@ -313,6 +336,7 @@ def main() -> None:
         memberships = login_payload.get("memberships")
         if not isinstance(memberships, list) or len(memberships) < 2:
             fail(f"login response missing expected multi-family context: {login_payload}")
+        assert_memberships_shape(memberships, "parent login")
         ok("login returns bearer token with multiple memberships")
 
         families_payload = request_json(
@@ -337,6 +361,7 @@ def main() -> None:
         caregiver_memberships = caregiver_login.get("memberships")
         if not isinstance(caregiver_memberships, list):
             fail(f"caregiver login failed to return memberships: {caregiver_login}")
+        assert_memberships_shape(caregiver_memberships, "caregiver login")
 
         caregiver_family_ids = {
             membership.get("familyId")
@@ -358,6 +383,7 @@ def main() -> None:
         child_memberships = child_login.get("memberships")
         if not isinstance(child_memberships, list):
             fail(f"child login failed to return memberships: {child_login}")
+        assert_memberships_shape(child_memberships, "child login")
 
         child_family_ids = {
             membership.get("familyId")
@@ -383,6 +409,14 @@ def main() -> None:
                 f"(parent={parent_family_ids}, caregiver={caregiver_family_ids})"
             )
         forbidden_family_id = parent_only_family_ids[0]
+        parent_forbidden_membership = membership_for_family(
+            memberships, forbidden_family_id, "parent secondary family"
+        )
+        if not permission_flag(parent_forbidden_membership, "canViewLocation", "parent secondary family"):
+            fail(
+                "parent secondary family membership should allow canViewLocation so the "
+                "location-sharing-disabled gate can be tested independently"
+            )
 
         caregiver_shared_membership = membership_for_family(
             caregiver_memberships, shared_family_id, "caregiver shared family"
@@ -548,6 +582,10 @@ def main() -> None:
             f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/locations",
             token=child_token,
             expected_status=403,
+        )
+        _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{forbidden_family_id}/summary",
+            token=token,
         )
         _ = request_json(
             f"http://127.0.0.1:3000/api/v1/families/{forbidden_family_id}/locations",

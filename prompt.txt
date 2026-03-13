@@ -97,6 +97,7 @@ Data and tenancy requirements:
 - Location access gate:
   - `GET /locations` requires both membership `canViewLocation=true` and `family.locationSharingEnabled=true`.
   - Parent location reads on their non-shared secondary family should return `403` (seeded location-sharing-disabled path).
+  - In that non-shared secondary family seed, parent membership still has `canViewLocation=true` so the `403` is attributable to `locationSharingEnabled=false`, not missing membership permission.
 - For a forbidden family, these read routes must return `403`:
   `/summary`, `/tasks`, `/events`, `/feed`, `/lists`, `/reminders`, `/locations`.
 - For a forbidden family, these create routes must return `403`:
