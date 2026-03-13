@@ -1,8 +1,8 @@
 Continue implementation from the scaffold and make the backend operational for the provided multi-family foundation while extending it beyond read-only behavior.
 
-Use the provided stack and finish wiring so this workflow succeeds end-to-end:
+Use the provided stack and finish wiring so the local workflow succeeds end-to-end:
 
-- `bash scripts/init-postgres.sh`
+- `npm install --no-audit --no-fund`
 - `npm run prisma:generate`
 - `npm run prisma:migrate`
 - `npm run seed`
@@ -13,6 +13,8 @@ Seeded auth expectations:
 
 - `parent@example.com` / `family123` must log in and retain at least two family memberships.
 - `caregiver@example.com` / `caregiver123` must log in and retain a narrower membership set used for tenancy isolation checks.
+- Login must return a bearer token in one of these keys: `accessToken`, `token`, `bearerToken`, or `jwt`.
+- Protected family routes must accept `Authorization: Bearer <token>` using that token value.
 
 Required read routes:
 
@@ -48,6 +50,18 @@ Required write routes (must persist and be visible in subsequent reads):
 - `POST /api/v1/families/:familyId/lists/:listId/items`
 - `POST /api/v1/families/:familyId/reminders`
 
+Write request payload contract (minimum accepted fields):
+
+- `POST /tasks` accepts `{ "title": string, "cadence": "ONE_TIME" }` and may also accept `visibility`.
+- `PATCH /tasks/:taskId` accepts `{ "status": "DONE" }`.
+- `POST /events` accepts `{ "title": string, "startsAt": ISO8601, "endsAt": ISO8601 }` and may also accept `visibility`.
+- `POST /feed` accepts `{ "body": string }`.
+- `POST /feed/:postId/comments` accepts `{ "body": string }`.
+- `POST /feed/:postId/likes` accepts an empty or omitted JSON body.
+- `POST /lists` accepts `{ "title": string }` and may also accept `visibility`.
+- `POST /lists/:listId/items` accepts `{ "label": string }`.
+- `POST /reminders` accepts `{ "title": string, "scheduleText": string }`.
+
 Write response envelope contract:
 
 - Create/update routes return JSON containing the created/updated entity as either a named key
@@ -79,10 +93,10 @@ Write-path validation expectations:
 Operational expectations:
 
 - `npm install --no-audit --no-fund` succeeds in the workspace.
-- PostgreSQL bootstrap script completes and Prisma generate/migrate/seed complete.
+- Database bootstrap (scripted or equivalent) makes Prisma generate/migrate/seed succeed.
 - TypeScript build succeeds and server boots successfully.
 - `/healthz` returns a JSON payload with `ok: true`.
-- Repository keeps `scripts/init-postgres.sh` and package scripts:
+- Repository keeps package scripts:
   `prisma:generate`, `prisma:migrate`, `seed`, `build`, and `start`.
 
 Do not bypass failures by editing verifier logic, and do not remove family-scoped routes to force passing behavior.
