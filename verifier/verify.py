@@ -98,6 +98,7 @@ def extract_token(payload: Any, context: str) -> str:
     if not isinstance(payload, dict):
         fail(f"{context} did not return a JSON object: {payload}")
 
+    # Token contract is intentionally top-level only for prompt/verifier bijection.
     candidates: list[Any] = [
         payload.get("accessToken"),
         payload.get("token"),
@@ -105,22 +106,14 @@ def extract_token(payload: Any, context: str) -> str:
         payload.get("jwt"),
     ]
 
-    nested = payload.get("data")
-    if isinstance(nested, dict):
-        candidates.extend(
-            [
-                nested.get("accessToken"),
-                nested.get("token"),
-                nested.get("bearerToken"),
-                nested.get("jwt"),
-            ]
-        )
-
     for candidate in candidates:
         if isinstance(candidate, str) and candidate.strip():
             return candidate
 
-    fail(f"{context} did not include a bearer token field (expected one of accessToken/token/bearerToken/jwt): {payload}")
+    fail(
+        f"{context} did not include a top-level bearer token field "
+        f"(expected one of accessToken/token/bearerToken/jwt): {payload}"
+    )
     raise AssertionError("unreachable")
 
 
