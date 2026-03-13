@@ -89,6 +89,9 @@ Data and tenancy requirements:
 - Permission gates for family-scoped writes:
   - `canManageTasks` controls task create/update, event create, list create/item create, and reminder create.
   - `canPost` controls feed post create, feed comment create, and feed like create.
+- Nested-resource family scoping:
+  - `:postId` and `:listId` must belong to the requested `:familyId`.
+  - If the parent resource exists but belongs to a different family, write routes must reject with `404` (not silently cross-link).
 - Authorization source of truth:
   - Membership and permission authorization must be enforced from current database state, not only from JWT claims.
   - If `canPost` is revoked in DB after login, the same token must lose post/comment/like access (`403`).
@@ -108,6 +111,9 @@ Write-path validation expectations:
 - The created event must appear in a subsequent events read for the same family.
 - The created post must appear in a subsequent feed read for the same family.
 - After creating a comment and a like for the created post, that post should report `commentCount >= 1` and `likeCount >= 1`.
+- Repeating the like operation by the same user on the same post must be idempotent:
+  - second like request may return success or conflict,
+  - final `likeCount` for that post must remain `1`.
 - The created list and created list item must appear in a subsequent lists read for the same family.
 - The created reminder must appear in a subsequent reminders read for the same family.
 - After the write sequence, family summary aggregate counts for `tasks`, `events`, `reminders`, `lists`, and `posts` must each increase by at least 1 from baseline.
@@ -116,10 +122,14 @@ Write-path validation expectations:
   - event create, list create, list-item create (`POST /lists/:listId/items`), and reminder create return `403`.
   - feed post/comment/like writes succeed.
 - Child write behavior in the shared family:
-  - task and feed writes return `403`.
+  - task create + task update, event create, list create + list-item create, and reminder create return `403`.
+  - feed post/comment/like writes return `403`.
 - Location behavior:
   - parent and caregiver can read shared-family locations.
   - child receives `403` on shared-family locations.
+- Cross-family nested ID checks:
+  - using `familyId=A` with a `postId` that belongs to `familyId=B` must return `404` on comment/like writes.
+  - using `familyId=A` with a `listId` that belongs to `familyId=B` must return `404` on list-item writes.
 
 Operational expectations:
 

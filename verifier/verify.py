@@ -687,6 +687,16 @@ def main() -> None:
             maybe_like_count = like_payload.get("likeCount")
             if maybe_like_count is not None and maybe_like_count < 1:
                 fail(f"like route returned invalid likeCount: {like_payload}")
+        duplicate_like_payload = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{family_id}/feed/{created_post_id}/likes",
+            method="POST",
+            token=token,
+            expected_status=(200, 201, 409),
+        )
+        if isinstance(duplicate_like_payload, dict):
+            maybe_like_count = duplicate_like_payload.get("likeCount")
+            if maybe_like_count is not None and maybe_like_count != 1:
+                fail(f"duplicate like should keep likeCount at 1: {duplicate_like_payload}")
         ok("feed like route works")
 
         create_list_payload = request_json(
@@ -762,8 +772,8 @@ def main() -> None:
             fail(f"created post in follow-up read has mismatched familyId: {feed_after_payload}")
         if created_post_after.get("commentCount", 0) < 1:
             fail(f"created post commentCount was not incremented: {feed_after_payload}")
-        if created_post_after.get("likeCount", 0) < 1:
-            fail(f"created post likeCount was not incremented: {feed_after_payload}")
+        if created_post_after.get("likeCount") != 1:
+            fail(f"created post likeCount should be exactly 1 after duplicate like attempt: {feed_after_payload}")
 
         lists_payload = request_json(
             f"http://127.0.0.1:3000/api/v1/families/{family_id}/lists",
@@ -878,6 +888,57 @@ def main() -> None:
             expected_status=(200, 201),
         )
         ok("caregiver permissions enforce post-allowed/task-denied behavior")
+
+        cross_family_post_payload = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{forbidden_family_id}/feed",
+            method="POST",
+            body={"body": "Parent post in secondary family"},
+            token=token,
+            expected_status=(200, 201),
+        )
+        cross_family_post = extract_object(cross_family_post_payload, ["post"], "cross-family post create")
+        cross_family_post_id = cross_family_post.get("id")
+        if not cross_family_post_id:
+            fail(f"cross-family post create did not return an id: {cross_family_post_payload}")
+        if cross_family_post.get("familyId") != forbidden_family_id:
+            fail(f"cross-family post create returned mismatched familyId: {cross_family_post_payload}")
+
+        _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/feed/{cross_family_post_id}/comments",
+            method="POST",
+            body={"body": "Cross-family comment attempt"},
+            token=token,
+            expected_status=404,
+        )
+        _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/feed/{cross_family_post_id}/likes",
+            method="POST",
+            token=token,
+            expected_status=404,
+        )
+
+        cross_family_list_payload = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{forbidden_family_id}/lists",
+            method="POST",
+            body={"title": "Parent list in secondary family"},
+            token=token,
+            expected_status=(200, 201),
+        )
+        cross_family_list = extract_object(cross_family_list_payload, ["list"], "cross-family list create")
+        cross_family_list_id = cross_family_list.get("id")
+        if not cross_family_list_id:
+            fail(f"cross-family list create did not return an id: {cross_family_list_payload}")
+        if cross_family_list.get("familyId") != forbidden_family_id:
+            fail(f"cross-family list create returned mismatched familyId: {cross_family_list_payload}")
+
+        _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/lists/{cross_family_list_id}/items",
+            method="POST",
+            body={"label": "Cross-family list item attempt"},
+            token=token,
+            expected_status=404,
+        )
+        ok("nested resource writes enforce family-id to parent-resource consistency")
 
         _ = request_json(
             f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/tasks",
