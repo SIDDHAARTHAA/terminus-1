@@ -13,8 +13,12 @@ Seeded auth expectations:
 
 - `parent@example.com` / `family123` must log in and retain at least two family memberships.
 - `caregiver@example.com` / `caregiver123` must log in and retain a narrower membership set used for tenancy isolation checks.
+- `child@example.com` / `child123` must log in and retain a single-family read-only membership.
 - Login must return a bearer token in one of these keys: `accessToken`, `token`, `bearerToken`, or `jwt`.
 - Protected family routes must accept `Authorization: Bearer <token>` using that token value.
+- In the shared family membership used by parent/caregiver/child:
+  - caregiver permissions include `canManageTasks: false`, `canPost: true`, `canViewLocation: true`.
+  - child permissions include `canManageTasks: false`, `canPost: false`, `canViewLocation: false`.
 
 Required read routes:
 
@@ -27,6 +31,7 @@ Required read routes:
 - `GET /api/v1/families/:familyId/feed`
 - `GET /api/v1/families/:familyId/lists`
 - `GET /api/v1/families/:familyId/reminders`
+- `GET /api/v1/families/:familyId/locations`
 
 Read response envelope contract:
 
@@ -37,6 +42,7 @@ Read response envelope contract:
 - `GET /api/v1/families/:familyId/feed` returns `{ "posts": [...] }`.
 - `GET /api/v1/families/:familyId/lists` returns `{ "lists": [...] }`.
 - `GET /api/v1/families/:familyId/reminders` returns `{ "reminders": [...] }`.
+- `GET /api/v1/families/:familyId/locations` returns `{ "locations": [...] }`.
 
 Required write routes (must persist and be visible in subsequent reads):
 
@@ -72,10 +78,22 @@ Data and tenancy requirements:
 
 - Family summary includes aggregate counts for `tasks`, `events`, `reminders`, `lists`, and `posts`.
 - Feed includes social engagement metadata (`commentCount`, `likeCount`).
-- Task, event, and feed records include `familyId` and it matches the requested `:familyId`.
+- Task, event, feed, and location records include `familyId` and it matches the requested `:familyId`.
+- Task/event/list records surface `visibility`.
 - Seeded reads for tasks/events/feed are non-empty for at least one accessible family.
+- In the shared family, seeded tasks/events/lists include both `PRIVATE` and `SHARED` records.
+- In the shared family, seeded location check-ins are non-empty.
+- For tasks, events, and lists in the shared family:
+  - `OWNER`/`ADMIN` can read both `PRIVATE` and `SHARED` records.
+  - `CAREGIVER`/`CHILD` reads must exclude `PRIVATE` records.
+- Permission gates for family-scoped writes:
+  - `canManageTasks` controls task create/update, event create, list create/item create, and reminder create.
+  - `canPost` controls feed post create, feed comment create, and feed like create.
+- Location access gate:
+  - `GET /locations` requires both membership `canViewLocation=true` and `family.locationSharingEnabled=true`.
+  - Parent location reads on their non-shared secondary family should return `403` (seeded location-sharing-disabled path).
 - For a forbidden family, these read routes must return `403`:
-  `/summary`, `/tasks`, `/events`, `/feed`, `/lists`, `/reminders`.
+  `/summary`, `/tasks`, `/events`, `/feed`, `/lists`, `/reminders`, `/locations`.
 - For a forbidden family, these create routes must return `403`:
   `POST /tasks`, `POST /events`, `POST /feed`, `POST /lists`, `POST /reminders`.
 
@@ -89,6 +107,14 @@ Write-path validation expectations:
 - The created list and created list item must appear in a subsequent lists read for the same family.
 - The created reminder must appear in a subsequent reminders read for the same family.
 - After the write sequence, family summary aggregate counts for `tasks`, `events`, `reminders`, `lists`, and `posts` must each increase by at least 1 from baseline.
+- Caregiver write behavior in the shared family:
+  - task/event/list/reminder writes return `403`.
+  - feed post/comment/like writes succeed.
+- Child write behavior in the shared family:
+  - task and feed writes return `403`.
+- Location behavior:
+  - parent and caregiver can read shared-family locations.
+  - child receives `403` on shared-family locations.
 
 Operational expectations:
 

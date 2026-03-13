@@ -19,6 +19,7 @@ async function main() {
 
   const passwordHash = await bcrypt.hash(process.env.DEMO_USER_PASSWORD ?? "family123", 10);
   const caregiverHash = await bcrypt.hash("caregiver123", 10);
+  const childHash = await bcrypt.hash("child123", 10);
 
   const parent = await prisma.user.create({
     data: {
@@ -33,6 +34,14 @@ async function main() {
       email: "caregiver@example.com",
       passwordHash: caregiverHash,
       displayName: "Sam Caregiver"
+    }
+  });
+
+  const child = await prisma.user.create({
+    data: {
+      email: "child@example.com",
+      passwordHash: childHash,
+      displayName: "Riley Child"
     }
   });
 
@@ -72,9 +81,20 @@ async function main() {
         userId: caregiver.id,
         role: MemberRole.CAREGIVER,
         permissions: {
-          canManageTasks: true,
+          canManageTasks: false,
           canViewLocation: true,
           canPost: true
+        }
+      },
+      {
+        familyId: riverHouse.id,
+        userId: child.id,
+        role: MemberRole.CHILD,
+        permissions: {
+          canManageMembers: false,
+          canManageTasks: false,
+          canViewLocation: false,
+          canPost: false
         }
       },
       {
@@ -134,6 +154,14 @@ async function main() {
         visibility: Visibility.SHARED
       },
       {
+        familyId: riverHouse.id,
+        title: "Private dentist consult",
+        description: "Insurance call before the visit.",
+        startsAt: new Date("2026-03-13T16:00:00.000Z"),
+        endsAt: new Date("2026-03-13T16:45:00.000Z"),
+        visibility: Visibility.PRIVATE
+      },
+      {
         familyId: hillHouse.id,
         title: "Parent-teacher conference",
         startsAt: new Date("2026-03-14T14:00:00.000Z"),
@@ -156,6 +184,22 @@ async function main() {
       { listId: groceryList.id, label: "Milk", completed: false },
       { listId: groceryList.id, label: "Oranges", completed: true }
     ]
+  });
+
+  const privateHouseholdList = await prisma.familyList.create({
+    data: {
+      familyId: riverHouse.id,
+      title: "Private admin errands",
+      visibility: Visibility.PRIVATE
+    }
+  });
+
+  await prisma.familyListItem.create({
+    data: {
+      listId: privateHouseholdList.id,
+      label: "Renew insurance documents",
+      completed: false
+    }
   });
 
   await prisma.reminder.createMany({

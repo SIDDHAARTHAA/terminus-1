@@ -124,6 +124,28 @@ def extract_token(payload: Any, context: str) -> str:
     raise AssertionError("unreachable")
 
 
+def membership_for_family(memberships: Any, family_id: str, context: str) -> dict:
+    if not isinstance(memberships, list):
+        fail(f"{context} memberships payload is not a list: {memberships}")
+
+    for membership in memberships:
+        if isinstance(membership, dict) and membership.get("familyId") == family_id:
+            return membership
+
+    fail(f"{context} did not include membership for family {family_id}: {memberships}")
+    raise AssertionError("unreachable")
+
+
+def permission_flag(membership: dict, key: str, context: str) -> bool:
+    permissions = membership.get("permissions")
+    if not isinstance(permissions, dict):
+        fail(f"{context} membership.permissions is not an object: {membership}")
+    value = permissions.get(key)
+    if not isinstance(value, bool):
+        fail(f"{context} membership permission {key} is not boolean: {membership}")
+    return value
+
+
 def find_seeded_family(
     *,
     token: str,
@@ -306,11 +328,223 @@ def main() -> None:
             fail(f"family listing did not include at least two valid family ids: {families_payload}")
         ok("family listing returns accessible families")
 
+        caregiver_login = request_json(
+            "http://127.0.0.1:3000/api/v1/auth/login",
+            method="POST",
+            body={"email": "caregiver@example.com", "password": "caregiver123"},
+        )
+        caregiver_token = extract_token(caregiver_login, "caregiver login")
+        caregiver_memberships = caregiver_login.get("memberships")
+        if not isinstance(caregiver_memberships, list):
+            fail(f"caregiver login failed to return memberships: {caregiver_login}")
+
+        caregiver_family_ids = {
+            membership.get("familyId")
+            for membership in caregiver_memberships
+            if isinstance(membership, dict)
+        }
+        caregiver_family_ids = {
+            family_id for family_id in caregiver_family_ids if isinstance(family_id, str) and family_id
+        }
+        if not caregiver_family_ids:
+            fail(f"caregiver had no family memberships: {caregiver_login}")
+
+        child_login = request_json(
+            "http://127.0.0.1:3000/api/v1/auth/login",
+            method="POST",
+            body={"email": "child@example.com", "password": "child123"},
+        )
+        child_token = extract_token(child_login, "child login")
+        child_memberships = child_login.get("memberships")
+        if not isinstance(child_memberships, list):
+            fail(f"child login failed to return memberships: {child_login}")
+
+        child_family_ids = {
+            membership.get("familyId")
+            for membership in child_memberships
+            if isinstance(membership, dict)
+        }
+        child_family_ids = {family_id for family_id in child_family_ids if isinstance(family_id, str) and family_id}
+        if len(child_family_ids) != 1:
+            fail(f"child should have exactly one family membership: {child_login}")
+
+        shared_family_candidates = sorted(parent_family_ids & caregiver_family_ids & child_family_ids)
+        if not shared_family_candidates:
+            fail(
+                "could not find shared family for parent/caregiver/child "
+                f"(parent={parent_family_ids}, caregiver={caregiver_family_ids}, child={child_family_ids})"
+            )
+        shared_family_id = shared_family_candidates[0]
+
+        parent_only_family_ids = sorted(parent_family_ids - caregiver_family_ids)
+        if not parent_only_family_ids:
+            fail(
+                "could not find parent-only family for tenancy isolation checks "
+                f"(parent={parent_family_ids}, caregiver={caregiver_family_ids})"
+            )
+        forbidden_family_id = parent_only_family_ids[0]
+
+        caregiver_shared_membership = membership_for_family(
+            caregiver_memberships, shared_family_id, "caregiver shared family"
+        )
+        if permission_flag(caregiver_shared_membership, "canManageTasks", "caregiver shared family"):
+            fail(f"caregiver shared family should deny canManageTasks: {caregiver_shared_membership}")
+        if not permission_flag(caregiver_shared_membership, "canPost", "caregiver shared family"):
+            fail(f"caregiver shared family should allow canPost: {caregiver_shared_membership}")
+        if not permission_flag(caregiver_shared_membership, "canViewLocation", "caregiver shared family"):
+            fail(f"caregiver shared family should allow canViewLocation: {caregiver_shared_membership}")
+
+        child_shared_membership = membership_for_family(child_memberships, shared_family_id, "child shared family")
+        if permission_flag(child_shared_membership, "canManageTasks", "child shared family"):
+            fail(f"child shared family should deny canManageTasks: {child_shared_membership}")
+        if permission_flag(child_shared_membership, "canPost", "child shared family"):
+            fail(f"child shared family should deny canPost: {child_shared_membership}")
+        if permission_flag(child_shared_membership, "canViewLocation", "child shared family"):
+            fail(f"child shared family should deny canViewLocation: {child_shared_membership}")
+        ok("seeded membership permissions are present for caregiver and child")
+
         family_id, tasks, events, posts = find_seeded_family(
             token=token,
             family_ids=sorted(parent_family_ids),
         )
         ok("found an accessible family with seeded non-empty tasks/events/feed")
+
+        parent_tasks_shared_payload = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/tasks",
+            token=token,
+        )
+        parent_tasks_shared = extract_list(parent_tasks_shared_payload, ["tasks"], "parent shared-family tasks")
+        if not parent_tasks_shared:
+            fail(f"parent shared-family tasks route was empty: {parent_tasks_shared_payload}")
+        if any(task.get("familyId") != shared_family_id for task in parent_tasks_shared):
+            fail(f"parent shared-family tasks leaked family ids: {parent_tasks_shared_payload}")
+        if any(task.get("visibility") not in ["PRIVATE", "SHARED"] for task in parent_tasks_shared):
+            fail(f"tasks missing expected visibility values: {parent_tasks_shared_payload}")
+        if not any(task.get("visibility") == "PRIVATE" for task in parent_tasks_shared):
+            fail(f"parent shared-family tasks should include at least one private task: {parent_tasks_shared_payload}")
+        if not any(task.get("visibility") == "SHARED" for task in parent_tasks_shared):
+            fail(f"parent shared-family tasks should include at least one shared task: {parent_tasks_shared_payload}")
+
+        caregiver_tasks_shared_payload = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/tasks",
+            token=caregiver_token,
+        )
+        caregiver_tasks_shared = extract_list(caregiver_tasks_shared_payload, ["tasks"], "caregiver shared-family tasks")
+        if any(task.get("visibility") == "PRIVATE" for task in caregiver_tasks_shared):
+            fail(f"caregiver should not receive private tasks in shared family: {caregiver_tasks_shared_payload}")
+        if any(task.get("familyId") != shared_family_id for task in caregiver_tasks_shared):
+            fail(f"caregiver shared-family tasks leaked family ids: {caregiver_tasks_shared_payload}")
+
+        child_tasks_shared_payload = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/tasks",
+            token=child_token,
+        )
+        child_tasks_shared = extract_list(child_tasks_shared_payload, ["tasks"], "child shared-family tasks")
+        if any(task.get("visibility") == "PRIVATE" for task in child_tasks_shared):
+            fail(f"child should not receive private tasks in shared family: {child_tasks_shared_payload}")
+        if any(task.get("familyId") != shared_family_id for task in child_tasks_shared):
+            fail(f"child shared-family tasks leaked family ids: {child_tasks_shared_payload}")
+
+        parent_events_shared_payload = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/events",
+            token=token,
+        )
+        parent_events_shared = extract_list(parent_events_shared_payload, ["events"], "parent shared-family events")
+        if not parent_events_shared:
+            fail(f"parent shared-family events route was empty: {parent_events_shared_payload}")
+        if any(event.get("familyId") != shared_family_id for event in parent_events_shared):
+            fail(f"parent shared-family events leaked family ids: {parent_events_shared_payload}")
+        if any(event.get("visibility") not in ["PRIVATE", "SHARED"] for event in parent_events_shared):
+            fail(f"events missing expected visibility values: {parent_events_shared_payload}")
+        if not any(event.get("visibility") == "PRIVATE" for event in parent_events_shared):
+            fail(f"parent shared-family events should include at least one private event: {parent_events_shared_payload}")
+        if not any(event.get("visibility") == "SHARED" for event in parent_events_shared):
+            fail(f"parent shared-family events should include at least one shared event: {parent_events_shared_payload}")
+
+        caregiver_events_shared_payload = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/events",
+            token=caregiver_token,
+        )
+        caregiver_events_shared = extract_list(
+            caregiver_events_shared_payload, ["events"], "caregiver shared-family events"
+        )
+        if any(event.get("visibility") == "PRIVATE" for event in caregiver_events_shared):
+            fail(f"caregiver should not receive private events in shared family: {caregiver_events_shared_payload}")
+        if any(event.get("familyId") != shared_family_id for event in caregiver_events_shared):
+            fail(f"caregiver shared-family events leaked family ids: {caregiver_events_shared_payload}")
+
+        child_events_shared_payload = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/events",
+            token=child_token,
+        )
+        child_events_shared = extract_list(child_events_shared_payload, ["events"], "child shared-family events")
+        if any(event.get("visibility") == "PRIVATE" for event in child_events_shared):
+            fail(f"child should not receive private events in shared family: {child_events_shared_payload}")
+        if any(event.get("familyId") != shared_family_id for event in child_events_shared):
+            fail(f"child shared-family events leaked family ids: {child_events_shared_payload}")
+
+        parent_lists_shared_payload = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/lists",
+            token=token,
+        )
+        parent_lists_shared = extract_list(parent_lists_shared_payload, ["lists"], "parent shared-family lists")
+        if not parent_lists_shared:
+            fail(f"parent shared-family lists route was empty: {parent_lists_shared_payload}")
+        if any(family_list.get("visibility") not in ["PRIVATE", "SHARED"] for family_list in parent_lists_shared):
+            fail(f"lists missing expected visibility values: {parent_lists_shared_payload}")
+        if not any(family_list.get("visibility") == "PRIVATE" for family_list in parent_lists_shared):
+            fail(f"parent shared-family lists should include at least one private list: {parent_lists_shared_payload}")
+        if not any(family_list.get("visibility") == "SHARED" for family_list in parent_lists_shared):
+            fail(f"parent shared-family lists should include at least one shared list: {parent_lists_shared_payload}")
+
+        caregiver_lists_shared_payload = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/lists",
+            token=caregiver_token,
+        )
+        caregiver_lists_shared = extract_list(caregiver_lists_shared_payload, ["lists"], "caregiver shared-family lists")
+        if any(family_list.get("visibility") == "PRIVATE" for family_list in caregiver_lists_shared):
+            fail(f"caregiver should not receive private lists in shared family: {caregiver_lists_shared_payload}")
+
+        child_lists_shared_payload = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/lists",
+            token=child_token,
+        )
+        child_lists_shared = extract_list(child_lists_shared_payload, ["lists"], "child shared-family lists")
+        if any(family_list.get("visibility") == "PRIVATE" for family_list in child_lists_shared):
+            fail(f"child should not receive private lists in shared family: {child_lists_shared_payload}")
+        ok("private visibility is scoped for non-owner roles in shared family")
+
+        parent_locations_payload = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/locations",
+            token=token,
+        )
+        parent_locations = extract_list(parent_locations_payload, ["locations"], "parent shared-family locations")
+        if not parent_locations:
+            fail(f"parent shared-family locations should be non-empty: {parent_locations_payload}")
+        if any(location.get("familyId") != shared_family_id for location in parent_locations):
+            fail(f"parent shared-family locations leaked family ids: {parent_locations_payload}")
+
+        caregiver_locations_payload = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/locations",
+            token=caregiver_token,
+        )
+        caregiver_locations = extract_list(
+            caregiver_locations_payload, ["locations"], "caregiver shared-family locations"
+        )
+        if any(location.get("familyId") != shared_family_id for location in caregiver_locations):
+            fail(f"caregiver shared-family locations leaked family ids: {caregiver_locations_payload}")
+
+        _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/locations",
+            token=child_token,
+            expected_status=403,
+        )
+        _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{forbidden_family_id}/locations",
+            token=token,
+            expected_status=403,
+        )
+        ok("location visibility/permission gates are enforced")
 
         summary_payload = request_json(
             f"http://127.0.0.1:3000/api/v1/families/{family_id}/summary",
@@ -532,31 +766,81 @@ def main() -> None:
                 )
         ok("summary counts reflect persisted writes")
 
-        caregiver_login = request_json(
-            "http://127.0.0.1:3000/api/v1/auth/login",
+        _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/tasks",
             method="POST",
-            body={"email": "caregiver@example.com", "password": "caregiver123"},
+            body={"title": "Caregiver unauthorized task", "cadence": "ONE_TIME"},
+            token=caregiver_token,
+            expected_status=403,
         )
-        caregiver_token = extract_token(caregiver_login, "caregiver login")
-        caregiver_memberships = caregiver_login.get("memberships")
-        if not isinstance(caregiver_memberships, list):
-            fail(f"caregiver login failed to return token/memberships: {caregiver_login}")
+        _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/events",
+            method="POST",
+            body={
+                "title": "Caregiver unauthorized event",
+                "startsAt": "2026-06-01T09:00:00.000Z",
+                "endsAt": "2026-06-01T10:00:00.000Z",
+            },
+            token=caregiver_token,
+            expected_status=403,
+        )
+        _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/lists",
+            method="POST",
+            body={"title": "Caregiver unauthorized list"},
+            token=caregiver_token,
+            expected_status=403,
+        )
+        _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/reminders",
+            method="POST",
+            body={"title": "Caregiver unauthorized reminder", "scheduleText": "Daily 08:00"},
+            token=caregiver_token,
+            expected_status=403,
+        )
 
-        caregiver_family_ids = {
-            membership.get("familyId")
-            for membership in caregiver_memberships
-            if isinstance(membership, dict)
-        }
-        caregiver_family_ids = {
-            family_id for family_id in caregiver_family_ids if isinstance(family_id, str) and family_id
-        }
-        forbidden_family_ids = sorted(parent_family_ids - caregiver_family_ids)
-        if not forbidden_family_ids:
-            fail(
-                "could not find a forbidden family id to validate access isolation "
-                f"(parent={parent_family_ids}, caregiver={caregiver_family_ids})"
-            )
-        forbidden_family_id = forbidden_family_ids[0]
+        caregiver_post_payload = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/feed",
+            method="POST",
+            body={"body": "Caregiver authorized post"},
+            token=caregiver_token,
+            expected_status=(200, 201),
+        )
+        caregiver_post = extract_object(caregiver_post_payload, ["post"], "caregiver create post")
+        caregiver_post_id = caregiver_post.get("id")
+        if not caregiver_post_id:
+            fail(f"caregiver post create did not return an id: {caregiver_post_payload}")
+
+        _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/feed/{caregiver_post_id}/comments",
+            method="POST",
+            body={"body": "Caregiver follow-up comment"},
+            token=caregiver_token,
+            expected_status=(200, 201),
+        )
+        _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/feed/{caregiver_post_id}/likes",
+            method="POST",
+            token=caregiver_token,
+            expected_status=(200, 201),
+        )
+        ok("caregiver permissions enforce post-allowed/task-denied behavior")
+
+        _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/tasks",
+            method="POST",
+            body={"title": "Child unauthorized task", "cadence": "ONE_TIME"},
+            token=child_token,
+            expected_status=403,
+        )
+        _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/feed",
+            method="POST",
+            body={"body": "Child unauthorized post"},
+            token=child_token,
+            expected_status=403,
+        )
+        ok("child read-only permission behavior is enforced")
 
         forbidden_read_paths = [
             f"/api/v1/families/{forbidden_family_id}/summary",
@@ -565,6 +849,7 @@ def main() -> None:
             f"/api/v1/families/{forbidden_family_id}/feed",
             f"/api/v1/families/{forbidden_family_id}/lists",
             f"/api/v1/families/{forbidden_family_id}/reminders",
+            f"/api/v1/families/{forbidden_family_id}/locations",
         ]
         for path in forbidden_read_paths:
             _ = request_json(
