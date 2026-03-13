@@ -34,6 +34,7 @@ Required read routes:
 - `GET /api/v1/families/:familyId/lists`
 - `GET /api/v1/families/:familyId/reminders`
 - `GET /api/v1/families/:familyId/locations`
+- `GET /api/v1/families/:familyId/members`
 
 Read response envelope contract:
 
@@ -45,6 +46,7 @@ Read response envelope contract:
 - `GET /api/v1/families/:familyId/lists` returns `{ "lists": [...] }`.
 - `GET /api/v1/families/:familyId/reminders` returns `{ "reminders": [...] }`.
 - `GET /api/v1/families/:familyId/locations` returns `{ "locations": [...] }`.
+- `GET /api/v1/families/:familyId/members` returns `{ "members": [...] }`.
 
 Required write routes (must persist and be visible in subsequent reads):
 
@@ -57,6 +59,7 @@ Required write routes (must persist and be visible in subsequent reads):
 - `POST /api/v1/families/:familyId/lists`
 - `POST /api/v1/families/:familyId/lists/:listId/items`
 - `POST /api/v1/families/:familyId/reminders`
+- `PATCH /api/v1/families/:familyId/members/:memberId/permissions`
 
 Write request payload contract (minimum accepted fields):
 
@@ -69,11 +72,13 @@ Write request payload contract (minimum accepted fields):
 - `POST /lists` accepts `{ "title": string }` and may also accept `visibility`.
 - `POST /lists/:listId/items` accepts `{ "label": string }`.
 - `POST /reminders` accepts `{ "title": string, "scheduleText": string }`.
+- `PATCH /members/:memberId/permissions` accepts one or more boolean fields from:
+  `canManageMembers`, `canManageTasks`, `canPost`, `canViewLocation`.
 
 Write response envelope contract:
 
 - Create/update routes return JSON containing the created/updated entity as either a named key
-  (`task`, `event`, `post`, `comment`, `list`, `item`, `reminder`) or a direct object with `id`.
+  (`task`, `event`, `post`, `comment`, `list`, `item`, `reminder`, `member`) or a direct object with `id`.
 - The updated task response should surface status `DONE` when patched to done.
 
 Data and tenancy requirements:
@@ -82,6 +87,7 @@ Data and tenancy requirements:
 - Feed includes social engagement metadata (`commentCount`, `likeCount`).
 - Task, event, feed, and location records include `familyId` and it matches the requested `:familyId`.
 - Task/event/list records surface `visibility`.
+- Family member records include `id`, `familyId`, `userId`, `role`, and `permissions`.
 - Seeded reads for tasks/events/feed are non-empty for at least one accessible family.
 - In the shared family, seeded tasks/events/lists include both `PRIVATE` and `SHARED` records.
 - In the shared family, seeded location check-ins are non-empty.
@@ -91,6 +97,7 @@ Data and tenancy requirements:
 - Permission gates for family-scoped writes:
   - `canManageTasks` controls task create/update, event create, list create/item create, and reminder create.
   - `canPost` controls feed post create, feed comment create, and feed like create.
+  - `canManageMembers` controls permission updates via `PATCH /members/:memberId/permissions`.
 - Nested-resource family scoping:
   - `:postId` and `:listId` must belong to the requested `:familyId`.
   - If the parent resource exists but belongs to a different family, write routes must reject with `404` (not silently cross-link).
@@ -99,9 +106,12 @@ Data and tenancy requirements:
   - Parent location reads on their non-shared secondary family should return `403` (seeded location-sharing-disabled path).
   - In that non-shared secondary family seed, parent membership still has `canViewLocation=true` so the `403` is attributable to `locationSharingEnabled=false`, not missing membership permission.
 - For a forbidden family, these read routes must return `403`:
-  `/summary`, `/tasks`, `/events`, `/feed`, `/lists`, `/reminders`, `/locations`.
+  `/summary`, `/tasks`, `/events`, `/feed`, `/lists`, `/reminders`, `/locations`, `/members`.
 - For a forbidden family, these create routes must return `403`:
   `POST /tasks`, `POST /events`, `POST /feed`, `POST /lists`, `POST /reminders`.
+- Runtime authorization freshness:
+  - permission updates must be authoritative from current database state.
+  - after changing a member's permissions, already-issued bearer tokens for that user must reflect the new permissions immediately (no re-login requirement).
 
 Write-path validation expectations:
 
@@ -115,6 +125,7 @@ Write-path validation expectations:
   - final `likeCount` for that post must remain `1`.
 - The created list and created list item must appear in a subsequent lists read for the same family.
 - The created reminder must appear in a subsequent reminders read for the same family.
+- `GET /members` must expose caregiver/child records in the shared family and reflect permission updates after `PATCH /members/:memberId/permissions`.
 - After the write sequence, family summary aggregate counts for `tasks`, `events`, `reminders`, `lists`, and `posts` must each increase by at least 1 from baseline.
 - Caregiver write behavior in the shared family:
   - task create and task status update (`PATCH /tasks/:taskId`) return `403`.
@@ -123,6 +134,11 @@ Write-path validation expectations:
 - Child write behavior in the shared family:
   - task create + task update, event create, list create + list-item create, and reminder create return `403`.
   - feed post/comment/like writes return `403`.
+- Member-permission update behavior:
+  - caregiver and child must receive `403` when calling `PATCH /members/:memberId/permissions` in the shared family.
+  - parent on their non-shared secondary family must receive `403` for `PATCH /members/:memberId/permissions` due seeded `canManageMembers=false`.
+  - parent in the shared family can set caregiver `canPost=false`; caregiver's existing token must then get `403` on feed post create.
+  - parent in the shared family can later set caregiver `canPost=true` and `canManageTasks=true`; caregiver's existing token must then succeed on feed post create and task create.
 - Location behavior:
   - parent and caregiver can read shared-family locations.
   - child receives `403` on shared-family locations.

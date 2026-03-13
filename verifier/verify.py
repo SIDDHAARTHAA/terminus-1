@@ -162,6 +162,31 @@ def assert_memberships_shape(memberships: Any, context: str) -> None:
                 fail(f"{label} missing boolean permission {key}: {membership}")
 
 
+def assert_family_member_shape(member: Any, context: str) -> dict:
+    if not isinstance(member, dict):
+        fail(f"{context} is not an object: {member}")
+    member_id = member.get("id")
+    family_id = member.get("familyId")
+    user_id = member.get("userId")
+    role = member.get("role")
+    if not isinstance(member_id, str) or not member_id:
+        fail(f"{context} missing non-empty id: {member}")
+    if not isinstance(family_id, str) or not family_id:
+        fail(f"{context} missing non-empty familyId: {member}")
+    if not isinstance(user_id, str) or not user_id:
+        fail(f"{context} missing non-empty userId: {member}")
+    if not isinstance(role, str) or not role:
+        fail(f"{context} missing non-empty role: {member}")
+
+    permissions = member.get("permissions")
+    if not isinstance(permissions, dict):
+        fail(f"{context} missing permissions object: {member}")
+    for key in ("canManageMembers", "canManageTasks", "canPost", "canViewLocation"):
+        if not isinstance(permissions.get(key), bool):
+            fail(f"{context} permission {key} is not boolean: {member}")
+    return member
+
+
 def find_seeded_family(
     *,
     token: str,
@@ -429,6 +454,70 @@ def main() -> None:
         if permission_flag(child_shared_membership, "canViewLocation", "child shared family"):
             fail(f"child shared family should deny canViewLocation: {child_shared_membership}")
         ok("seeded membership permissions are present for caregiver and child")
+
+        shared_members_payload = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/members",
+            token=token,
+        )
+        shared_members = extract_list(shared_members_payload, ["members"], "shared-family members")
+        if len(shared_members) < 3:
+            fail(f"shared-family members route should include parent/caregiver/child: {shared_members_payload}")
+
+        shared_members_by_role: dict[str, dict] = {}
+        for index, member in enumerate(shared_members):
+            normalized_member = assert_family_member_shape(member, f"shared-family member[{index}]")
+            if normalized_member["familyId"] != shared_family_id:
+                fail(f"shared-family members leaked cross-family data: {shared_members_payload}")
+            role = normalized_member["role"]
+            if role not in shared_members_by_role:
+                shared_members_by_role[role] = normalized_member
+
+        caregiver_shared_member_record = shared_members_by_role.get("CAREGIVER")
+        child_shared_member_record = shared_members_by_role.get("CHILD")
+        if caregiver_shared_member_record is None or child_shared_member_record is None:
+            fail(
+                "shared-family members route did not expose caregiver/child records: "
+                f"{shared_members_payload}"
+            )
+        caregiver_shared_member_id = caregiver_shared_member_record["id"]
+        child_shared_member_id = child_shared_member_record["id"]
+
+        forbidden_members_payload = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{forbidden_family_id}/members",
+            token=token,
+        )
+        forbidden_members = extract_list(forbidden_members_payload, ["members"], "parent secondary-family members")
+        if not forbidden_members:
+            fail(f"parent secondary-family members route returned no members: {forbidden_members_payload}")
+        forbidden_parent_member = assert_family_member_shape(
+            forbidden_members[0], "parent secondary-family member[0]"
+        )
+        if forbidden_parent_member["familyId"] != forbidden_family_id:
+            fail(f"secondary-family members route leaked cross-family data: {forbidden_members_payload}")
+        forbidden_parent_member_id = forbidden_parent_member["id"]
+
+        _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/members/{caregiver_shared_member_id}/permissions",
+            method="PATCH",
+            body={"canPost": False},
+            token=caregiver_token,
+            expected_status=403,
+        )
+        _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/members/{child_shared_member_id}/permissions",
+            method="PATCH",
+            body={"canPost": True},
+            token=child_token,
+            expected_status=403,
+        )
+        _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{forbidden_family_id}/members/{forbidden_parent_member_id}/permissions",
+            method="PATCH",
+            body={"canPost": False},
+            token=token,
+            expected_status=403,
+        )
+        ok("member-permission update route enforces canManageMembers gates")
 
         family_id, tasks, events, posts = find_seeded_family(
             token=token,
@@ -1019,6 +1108,112 @@ def main() -> None:
         )
         ok("child read-only permission behavior is enforced")
 
+        revoke_post_permission_payload = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/members/{caregiver_shared_member_id}/permissions",
+            method="PATCH",
+            body={"canPost": False},
+            token=token,
+            expected_status=(200, 201),
+        )
+        revoked_member = assert_family_member_shape(
+            extract_object(revoke_post_permission_payload, ["member"], "revoke caregiver canPost"),
+            "revoke caregiver canPost response",
+        )
+        if revoked_member["familyId"] != shared_family_id:
+            fail(f"revoked caregiver member family mismatch: {revoke_post_permission_payload}")
+        if revoked_member["id"] != caregiver_shared_member_id:
+            fail(f"revoked caregiver member id mismatch: {revoke_post_permission_payload}")
+        if revoked_member["permissions"].get("canPost") is not False:
+            fail(f"revoke caregiver canPost did not persist false: {revoke_post_permission_payload}")
+
+        _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/feed",
+            method="POST",
+            body={"body": "Caregiver should now be blocked from posting"},
+            token=caregiver_token,
+            expected_status=403,
+        )
+
+        grant_permissions_payload = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/members/{caregiver_shared_member_id}/permissions",
+            method="PATCH",
+            body={"canPost": True, "canManageTasks": True},
+            token=token,
+            expected_status=(200, 201),
+        )
+        granted_member = assert_family_member_shape(
+            extract_object(grant_permissions_payload, ["member"], "grant caregiver permissions"),
+            "grant caregiver permissions response",
+        )
+        if granted_member["familyId"] != shared_family_id:
+            fail(f"granted caregiver member family mismatch: {grant_permissions_payload}")
+        if granted_member["id"] != caregiver_shared_member_id:
+            fail(f"granted caregiver member id mismatch: {grant_permissions_payload}")
+        if granted_member["permissions"].get("canPost") is not True:
+            fail(f"grant caregiver canPost did not persist true: {grant_permissions_payload}")
+        if granted_member["permissions"].get("canManageTasks") is not True:
+            fail(f"grant caregiver canManageTasks did not persist true: {grant_permissions_payload}")
+
+        caregiver_post_after_grant_payload = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/feed",
+            method="POST",
+            body={"body": "Caregiver post after permission grant"},
+            token=caregiver_token,
+            expected_status=(200, 201),
+        )
+        caregiver_post_after_grant = extract_object(
+            caregiver_post_after_grant_payload, ["post"], "caregiver post after permission grant"
+        )
+        if caregiver_post_after_grant.get("familyId") != shared_family_id:
+            fail(f"caregiver post after permission grant mismatched familyId: {caregiver_post_after_grant_payload}")
+
+        caregiver_task_after_grant_payload = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/tasks",
+            method="POST",
+            body={"title": "Caregiver task after permission grant", "cadence": "ONE_TIME"},
+            token=caregiver_token,
+            expected_status=(200, 201),
+        )
+        caregiver_task_after_grant = extract_object(
+            caregiver_task_after_grant_payload, ["task"], "caregiver task after permission grant"
+        )
+        if caregiver_task_after_grant.get("familyId") != shared_family_id:
+            fail(f"caregiver task after permission grant mismatched familyId: {caregiver_task_after_grant_payload}")
+
+        shared_members_after_update_payload = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/members",
+            token=token,
+        )
+        shared_members_after_update = extract_list(
+            shared_members_after_update_payload,
+            ["members"],
+            "shared-family members after permission updates",
+        )
+        caregiver_member_after_update = next(
+            (
+                assert_family_member_shape(member, "shared-family member after update")
+                for member in shared_members_after_update
+                if isinstance(member, dict) and member.get("id") == caregiver_shared_member_id
+            ),
+            None,
+        )
+        if caregiver_member_after_update is None:
+            fail(
+                "caregiver member not found in shared-family members after permission updates: "
+                f"{shared_members_after_update_payload}"
+            )
+        if caregiver_member_after_update["permissions"].get("canPost") is not True:
+            fail(
+                "shared-family members route did not reflect caregiver canPost=true after grant: "
+                f"{shared_members_after_update_payload}"
+            )
+        if caregiver_member_after_update["permissions"].get("canManageTasks") is not True:
+            fail(
+                "shared-family members route did not reflect caregiver canManageTasks=true after grant: "
+                f"{shared_members_after_update_payload}"
+            )
+        ok("permission updates are immediately enforced and reflected for existing tokens")
+
         forbidden_read_paths = [
             f"/api/v1/families/{forbidden_family_id}/summary",
             f"/api/v1/families/{forbidden_family_id}/tasks",
@@ -1027,6 +1222,7 @@ def main() -> None:
             f"/api/v1/families/{forbidden_family_id}/lists",
             f"/api/v1/families/{forbidden_family_id}/reminders",
             f"/api/v1/families/{forbidden_family_id}/locations",
+            f"/api/v1/families/{forbidden_family_id}/members",
         ]
         for path in forbidden_read_paths:
             _ = request_json(
