@@ -430,10 +430,15 @@ def main() -> None:
             token=caregiver_token,
         )
         caregiver_tasks_shared = extract_list(caregiver_tasks_shared_payload, ["tasks"], "caregiver shared-family tasks")
+        if not caregiver_tasks_shared:
+            fail(f"caregiver shared-family tasks should include at least one shared task: {caregiver_tasks_shared_payload}")
         if any(task.get("visibility") == "PRIVATE" for task in caregiver_tasks_shared):
             fail(f"caregiver should not receive private tasks in shared family: {caregiver_tasks_shared_payload}")
         if any(task.get("familyId") != shared_family_id for task in caregiver_tasks_shared):
             fail(f"caregiver shared-family tasks leaked family ids: {caregiver_tasks_shared_payload}")
+        caregiver_shared_task_id = caregiver_tasks_shared[0].get("id")
+        if not caregiver_shared_task_id:
+            fail(f"caregiver shared-family tasks did not include a usable task id: {caregiver_tasks_shared_payload}")
 
         child_tasks_shared_payload = request_json(
             f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/tasks",
@@ -502,8 +507,13 @@ def main() -> None:
             token=caregiver_token,
         )
         caregiver_lists_shared = extract_list(caregiver_lists_shared_payload, ["lists"], "caregiver shared-family lists")
+        if not caregiver_lists_shared:
+            fail(f"caregiver shared-family lists should include at least one shared list: {caregiver_lists_shared_payload}")
         if any(family_list.get("visibility") == "PRIVATE" for family_list in caregiver_lists_shared):
             fail(f"caregiver should not receive private lists in shared family: {caregiver_lists_shared_payload}")
+        caregiver_shared_list_id = caregiver_lists_shared[0].get("id")
+        if not caregiver_shared_list_id:
+            fail(f"caregiver shared-family lists did not include a usable list id: {caregiver_lists_shared_payload}")
 
         child_lists_shared_payload = request_json(
             f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/lists",
@@ -573,7 +583,6 @@ def main() -> None:
             body={
                 "title": "Verifier created task",
                 "cadence": "ONE_TIME",
-                "visibility": "SHARED",
             },
             token=token,
             expected_status=(200, 201),
@@ -607,7 +616,6 @@ def main() -> None:
                 "title": "Verifier created event",
                 "startsAt": "2026-04-01T17:30:00.000Z",
                 "endsAt": "2026-04-01T18:30:00.000Z",
-                "visibility": "SHARED",
             },
             token=token,
             expected_status=(200, 201),
@@ -662,7 +670,7 @@ def main() -> None:
         create_list_payload = request_json(
             f"http://127.0.0.1:3000/api/v1/families/{family_id}/lists",
             method="POST",
-            body={"title": "Verifier List", "visibility": "SHARED"},
+            body={"title": "Verifier List"},
             token=token,
             expected_status=(200, 201),
         )
@@ -774,6 +782,13 @@ def main() -> None:
             expected_status=403,
         )
         _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/tasks/{caregiver_shared_task_id}",
+            method="PATCH",
+            body={"status": "DONE"},
+            token=caregiver_token,
+            expected_status=403,
+        )
+        _ = request_json(
             f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/events",
             method="POST",
             body={
@@ -788,6 +803,13 @@ def main() -> None:
             f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/lists",
             method="POST",
             body={"title": "Caregiver unauthorized list"},
+            token=caregiver_token,
+            expected_status=403,
+        )
+        _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/lists/{caregiver_shared_list_id}/items",
+            method="POST",
+            body={"label": "Caregiver unauthorized list item"},
             token=caregiver_token,
             expected_status=403,
         )
@@ -870,7 +892,6 @@ def main() -> None:
                     "title": "Unauthorized event write attempt",
                     "startsAt": "2026-05-01T10:00:00.000Z",
                     "endsAt": "2026-05-01T11:00:00.000Z",
-                    "visibility": "SHARED",
                 },
             ),
             (
@@ -879,7 +900,7 @@ def main() -> None:
             ),
             (
                 f"/api/v1/families/{forbidden_family_id}/lists",
-                {"title": "Unauthorized list attempt", "visibility": "SHARED"},
+                {"title": "Unauthorized list attempt"},
             ),
             (
                 f"/api/v1/families/{forbidden_family_id}/reminders",

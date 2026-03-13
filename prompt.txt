@@ -108,7 +108,8 @@ Write-path validation expectations:
 - The created reminder must appear in a subsequent reminders read for the same family.
 - After the write sequence, family summary aggregate counts for `tasks`, `events`, `reminders`, `lists`, and `posts` must each increase by at least 1 from baseline.
 - Caregiver write behavior in the shared family:
-  - task/event/list/reminder writes return `403`.
+  - task create and task status update (`PATCH /tasks/:taskId`) return `403`.
+  - event create, list create, list-item create (`POST /lists/:listId/items`), and reminder create return `403`.
   - feed post/comment/like writes succeed.
 - Child write behavior in the shared family:
   - task and feed writes return `403`.
