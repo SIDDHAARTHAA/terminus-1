@@ -187,6 +187,24 @@ def assert_family_member_shape(member: Any, context: str) -> dict:
     return member
 
 
+def assert_summary_counts(summary_payload: Any, expected: dict[str, int], context: str) -> dict:
+    family = extract_object(summary_payload, ["family"], context)
+    counts = family.get("counts")
+    if not isinstance(counts, dict):
+        fail(f"{context} missing counts object: {summary_payload}")
+
+    for key, expected_value in expected.items():
+        actual = counts.get(key)
+        if not isinstance(actual, int):
+            fail(f"{context} count {key} is not an integer: {summary_payload}")
+        if actual != expected_value:
+            fail(
+                f"{context} count mismatch for {key}: expected {expected_value}, got {actual} "
+                f"(payload={summary_payload})"
+            )
+    return family
+
+
 def find_seeded_family(
     *,
     token: str,
@@ -499,6 +517,35 @@ def main() -> None:
         _ = request_json(
             f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/members/{caregiver_shared_member_id}/permissions",
             method="PATCH",
+            body={},
+            token=token,
+            expected_status=400,
+        )
+        _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/members/{caregiver_shared_member_id}/permissions",
+            method="PATCH",
+            body={"unknownPermission": True},
+            token=token,
+            expected_status=400,
+        )
+        _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/members/{caregiver_shared_member_id}/permissions",
+            method="PATCH",
+            body={"canPost": "yes"},
+            token=token,
+            expected_status=400,
+        )
+        _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/members/{forbidden_parent_member_id}/permissions",
+            method="PATCH",
+            body={"canPost": False},
+            token=token,
+            expected_status=404,
+        )
+
+        _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/members/{caregiver_shared_member_id}/permissions",
+            method="PATCH",
             body={"canPost": False},
             token=caregiver_token,
             expected_status=403,
@@ -517,7 +564,7 @@ def main() -> None:
             token=token,
             expected_status=403,
         )
-        ok("member-permission update route enforces canManageMembers gates")
+        ok("member-permission update route enforces payload validation and canManageMembers gates")
 
         family_id, tasks, events, posts = find_seeded_family(
             token=token,
@@ -565,6 +612,74 @@ def main() -> None:
             fail(f"child should not receive private tasks in shared family: {child_tasks_shared_payload}")
         if any(task.get("familyId") != shared_family_id for task in child_tasks_shared):
             fail(f"child shared-family tasks leaked family ids: {child_tasks_shared_payload}")
+
+        transition_private_task_payload = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/tasks",
+            method="POST",
+            body={
+                "title": "Visibility transition private task",
+                "cadence": "ONE_TIME",
+                "visibility": "PRIVATE",
+            },
+            token=token,
+            expected_status=(200, 201),
+        )
+        transition_private_task = extract_object(
+            transition_private_task_payload, ["task"], "create shared-family private transition task"
+        )
+        transition_private_task_id = transition_private_task.get("id")
+        if not transition_private_task_id:
+            fail(f"transition private task create did not return an id: {transition_private_task_payload}")
+        if transition_private_task.get("familyId") != shared_family_id:
+            fail(f"transition private task family mismatch: {transition_private_task_payload}")
+
+        caregiver_tasks_before_visibility_flip_payload = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/tasks",
+            token=caregiver_token,
+        )
+        caregiver_tasks_before_visibility_flip = extract_list(
+            caregiver_tasks_before_visibility_flip_payload,
+            ["tasks"],
+            "caregiver tasks before visibility flip",
+        )
+        if any(task.get("id") == transition_private_task_id for task in caregiver_tasks_before_visibility_flip):
+            fail(
+                "caregiver should not see PRIVATE transition task before visibility flip: "
+                f"{caregiver_tasks_before_visibility_flip_payload}"
+            )
+
+        transition_visibility_update_payload = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/tasks/{transition_private_task_id}",
+            method="PATCH",
+            body={"visibility": "SHARED"},
+            token=token,
+            expected_status=(200, 201),
+        )
+        transition_visibility_updated_task = extract_object(
+            transition_visibility_update_payload,
+            ["task"],
+            "update transition task visibility to shared",
+        )
+        if transition_visibility_updated_task.get("id") and transition_visibility_updated_task.get("id") != transition_private_task_id:
+            fail(f"transition visibility update returned wrong id: {transition_visibility_update_payload}")
+        if transition_visibility_updated_task.get("familyId") != shared_family_id:
+            fail(f"transition visibility update family mismatch: {transition_visibility_update_payload}")
+
+        caregiver_tasks_after_visibility_flip_payload = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/tasks",
+            token=caregiver_token,
+        )
+        caregiver_tasks_after_visibility_flip = extract_list(
+            caregiver_tasks_after_visibility_flip_payload,
+            ["tasks"],
+            "caregiver tasks after visibility flip",
+        )
+        if not any(task.get("id") == transition_private_task_id for task in caregiver_tasks_after_visibility_flip):
+            fail(
+                "caregiver should see transition task after visibility is flipped to SHARED: "
+                f"{caregiver_tasks_after_visibility_flip_payload}"
+            )
+        ok("shared-family task visibility transition is enforced")
 
         parent_events_shared_payload = request_json(
             f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/events",
@@ -639,6 +754,172 @@ def main() -> None:
         if any(family_list.get("visibility") == "PRIVATE" for family_list in child_lists_shared):
             fail(f"child should not receive private lists in shared family: {child_lists_shared_payload}")
         ok("private visibility is scoped for non-owner roles in shared family")
+
+        parent_tasks_for_summary = extract_list(
+            request_json(f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/tasks", token=token),
+            ["tasks"],
+            "parent shared-family tasks (summary consistency)",
+        )
+        caregiver_tasks_for_summary = extract_list(
+            request_json(
+                f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/tasks",
+                token=caregiver_token,
+            ),
+            ["tasks"],
+            "caregiver shared-family tasks (summary consistency)",
+        )
+        child_tasks_for_summary = extract_list(
+            request_json(f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/tasks", token=child_token),
+            ["tasks"],
+            "child shared-family tasks (summary consistency)",
+        )
+
+        parent_events_for_summary = extract_list(
+            request_json(f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/events", token=token),
+            ["events"],
+            "parent shared-family events (summary consistency)",
+        )
+        caregiver_events_for_summary = extract_list(
+            request_json(
+                f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/events",
+                token=caregiver_token,
+            ),
+            ["events"],
+            "caregiver shared-family events (summary consistency)",
+        )
+        child_events_for_summary = extract_list(
+            request_json(f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/events", token=child_token),
+            ["events"],
+            "child shared-family events (summary consistency)",
+        )
+
+        parent_lists_for_summary = extract_list(
+            request_json(f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/lists", token=token),
+            ["lists"],
+            "parent shared-family lists (summary consistency)",
+        )
+        caregiver_lists_for_summary = extract_list(
+            request_json(
+                f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/lists",
+                token=caregiver_token,
+            ),
+            ["lists"],
+            "caregiver shared-family lists (summary consistency)",
+        )
+        child_lists_for_summary = extract_list(
+            request_json(f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/lists", token=child_token),
+            ["lists"],
+            "child shared-family lists (summary consistency)",
+        )
+
+        parent_reminders_for_summary = extract_list(
+            request_json(f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/reminders", token=token),
+            ["reminders"],
+            "parent shared-family reminders (summary consistency)",
+        )
+        caregiver_reminders_for_summary = extract_list(
+            request_json(
+                f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/reminders",
+                token=caregiver_token,
+            ),
+            ["reminders"],
+            "caregiver shared-family reminders (summary consistency)",
+        )
+        child_reminders_for_summary = extract_list(
+            request_json(
+                f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/reminders",
+                token=child_token,
+            ),
+            ["reminders"],
+            "child shared-family reminders (summary consistency)",
+        )
+
+        parent_feed_for_summary = extract_list(
+            request_json(f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/feed", token=token),
+            ["posts"],
+            "parent shared-family feed (summary consistency)",
+        )
+        caregiver_feed_for_summary = extract_list(
+            request_json(
+                f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/feed",
+                token=caregiver_token,
+            ),
+            ["posts"],
+            "caregiver shared-family feed (summary consistency)",
+        )
+        child_feed_for_summary = extract_list(
+            request_json(f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/feed", token=child_token),
+            ["posts"],
+            "child shared-family feed (summary consistency)",
+        )
+        for posts_payload, context in [
+            (parent_feed_for_summary, "parent shared-family feed (summary consistency)"),
+            (caregiver_feed_for_summary, "caregiver shared-family feed (summary consistency)"),
+            (child_feed_for_summary, "child shared-family feed (summary consistency)"),
+        ]:
+            if any(post.get("familyId") != shared_family_id for post in posts_payload):
+                fail(f"{context} leaked cross-family data: {posts_payload}")
+
+        parent_summary_shared = assert_summary_counts(
+            request_json(f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/summary", token=token),
+            {
+                "tasks": len(parent_tasks_for_summary),
+                "events": len(parent_events_for_summary),
+                "lists": len(parent_lists_for_summary),
+                "reminders": len(parent_reminders_for_summary),
+                "posts": len(parent_feed_for_summary),
+            },
+            "parent shared-family summary consistency",
+        )
+        caregiver_summary_shared = assert_summary_counts(
+            request_json(
+                f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/summary",
+                token=caregiver_token,
+            ),
+            {
+                "tasks": len(caregiver_tasks_for_summary),
+                "events": len(caregiver_events_for_summary),
+                "lists": len(caregiver_lists_for_summary),
+                "reminders": len(caregiver_reminders_for_summary),
+                "posts": len(caregiver_feed_for_summary),
+            },
+            "caregiver shared-family summary consistency",
+        )
+        child_summary_shared = assert_summary_counts(
+            request_json(f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/summary", token=child_token),
+            {
+                "tasks": len(child_tasks_for_summary),
+                "events": len(child_events_for_summary),
+                "lists": len(child_lists_for_summary),
+                "reminders": len(child_reminders_for_summary),
+                "posts": len(child_feed_for_summary),
+            },
+            "child shared-family summary consistency",
+        )
+        for summary_family, context in [
+            (parent_summary_shared, "parent shared-family summary"),
+            (caregiver_summary_shared, "caregiver shared-family summary"),
+            (child_summary_shared, "child shared-family summary"),
+        ]:
+            if summary_family.get("id") != shared_family_id:
+                fail(f"{context} returned mismatched family id: {summary_family}")
+
+        if len(parent_tasks_for_summary) <= len(caregiver_tasks_for_summary):
+            fail(
+                "parent shared-family summary should have strictly more visible tasks than caregiver "
+                "due seeded private tasks"
+            )
+        if len(parent_events_for_summary) <= len(caregiver_events_for_summary):
+            fail(
+                "parent shared-family summary should have strictly more visible events than caregiver "
+                "due seeded private events"
+            )
+        if len(parent_lists_for_summary) <= len(caregiver_lists_for_summary):
+            fail(
+                "parent shared-family summary should have strictly more visible lists than caregiver "
+                "due seeded private lists"
+            )
+        ok("shared-family summary counts are role-scoped and route-consistent")
 
         parent_locations_payload = request_json(
             f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/locations",
