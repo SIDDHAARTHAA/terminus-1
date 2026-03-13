@@ -15,6 +15,8 @@ Seeded auth expectations:
 - `caregiver@example.com` / `caregiver123` must log in and retain a narrower membership set used for tenancy isolation checks.
 - `child@example.com` / `child123` must log in and retain a single-family read-only membership.
 - Login must return a bearer token in one of these keys: `accessToken`, `token`, `bearerToken`, or `jwt`.
+- Login must return a top-level `memberships` array.
+- Each membership object must include `familyId`, `role`, and a `permissions` object with boolean flags including `canManageTasks`, `canPost`, and `canViewLocation`.
 - Protected family routes must accept `Authorization: Bearer <token>` using that token value.
 - In the shared family membership used by parent/caregiver/child:
   - caregiver permissions include `canManageTasks: false`, `canPost: true`, `canViewLocation: true`.
@@ -92,10 +94,6 @@ Data and tenancy requirements:
 - Nested-resource family scoping:
   - `:postId` and `:listId` must belong to the requested `:familyId`.
   - If the parent resource exists but belongs to a different family, write routes must reject with `404` (not silently cross-link).
-- Authorization source of truth:
-  - Membership and permission authorization must be enforced from current database state, not only from JWT claims.
-  - If `canPost` is revoked in DB after login, the same token must lose post/comment/like access (`403`).
-  - If family membership is removed in DB after login, the same token must lose family access (`403`).
 - Location access gate:
   - `GET /locations` requires both membership `canViewLocation=true` and `family.locationSharingEnabled=true`.
   - Parent location reads on their non-shared secondary family should return `403` (seeded location-sharing-disabled path).
