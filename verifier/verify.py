@@ -1406,6 +1406,16 @@ def main() -> None:
             fail(f"revoked caregiver member id mismatch: {revoke_post_permission_payload}")
         if revoked_member["permissions"].get("canPost") is not False:
             fail(f"revoke caregiver canPost did not persist false: {revoke_post_permission_payload}")
+        if revoked_member["permissions"].get("canManageTasks") is not False:
+            fail(
+                "revoke caregiver canPost should preserve existing canManageTasks=false: "
+                f"{revoke_post_permission_payload}"
+            )
+        if revoked_member["permissions"].get("canViewLocation") is not True:
+            fail(
+                "revoke caregiver canPost should preserve existing canViewLocation=true: "
+                f"{revoke_post_permission_payload}"
+            )
 
         _ = request_json(
             f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/feed",
@@ -1434,6 +1444,16 @@ def main() -> None:
             fail(f"grant caregiver canPost did not persist true: {grant_permissions_payload}")
         if granted_member["permissions"].get("canManageTasks") is not True:
             fail(f"grant caregiver canManageTasks did not persist true: {grant_permissions_payload}")
+        if granted_member["permissions"].get("canViewLocation") is not True:
+            fail(
+                "grant caregiver canPost/canManageTasks should preserve canViewLocation=true: "
+                f"{grant_permissions_payload}"
+            )
+        if granted_member["permissions"].get("canManageMembers") is not False:
+            fail(
+                "grant caregiver canPost/canManageTasks should preserve canManageMembers=false: "
+                f"{grant_permissions_payload}"
+            )
 
         caregiver_post_after_grant_payload = request_json(
             f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/feed",
@@ -1460,6 +1480,157 @@ def main() -> None:
         )
         if caregiver_task_after_grant.get("familyId") != shared_family_id:
             fail(f"caregiver task after permission grant mismatched familyId: {caregiver_task_after_grant_payload}")
+
+        grant_manage_members_payload = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/members/{caregiver_shared_member_id}/permissions",
+            method="PATCH",
+            body={"canManageMembers": True},
+            token=token,
+            expected_status=(200, 201),
+        )
+        caregiver_member_with_manage = assert_family_member_shape(
+            extract_object(grant_manage_members_payload, ["member"], "grant caregiver canManageMembers"),
+            "grant caregiver canManageMembers response",
+        )
+        if caregiver_member_with_manage["id"] != caregiver_shared_member_id:
+            fail(f"grant caregiver canManageMembers returned wrong member id: {grant_manage_members_payload}")
+        if caregiver_member_with_manage["familyId"] != shared_family_id:
+            fail(f"grant caregiver canManageMembers family mismatch: {grant_manage_members_payload}")
+        if caregiver_member_with_manage["permissions"].get("canManageMembers") is not True:
+            fail(f"grant caregiver canManageMembers did not persist true: {grant_manage_members_payload}")
+        if caregiver_member_with_manage["permissions"].get("canPost") is not True:
+            fail(
+                "grant caregiver canManageMembers should preserve canPost=true: "
+                f"{grant_manage_members_payload}"
+            )
+        if caregiver_member_with_manage["permissions"].get("canManageTasks") is not True:
+            fail(
+                "grant caregiver canManageMembers should preserve canManageTasks=true: "
+                f"{grant_manage_members_payload}"
+            )
+        if caregiver_member_with_manage["permissions"].get("canViewLocation") is not True:
+            fail(
+                "grant caregiver canManageMembers should preserve canViewLocation=true: "
+                f"{grant_manage_members_payload}"
+            )
+
+        caregiver_grant_child_post_payload = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/members/{child_shared_member_id}/permissions",
+            method="PATCH",
+            body={"canPost": True},
+            token=caregiver_token,
+            expected_status=(200, 201),
+        )
+        child_member_post_granted = assert_family_member_shape(
+            extract_object(caregiver_grant_child_post_payload, ["member"], "caregiver grant child canPost"),
+            "caregiver grant child canPost response",
+        )
+        if child_member_post_granted["id"] != child_shared_member_id:
+            fail(f"caregiver grant child canPost returned wrong member id: {caregiver_grant_child_post_payload}")
+        if child_member_post_granted["familyId"] != shared_family_id:
+            fail(f"caregiver grant child canPost family mismatch: {caregiver_grant_child_post_payload}")
+        if child_member_post_granted["permissions"].get("canPost") is not True:
+            fail(f"caregiver grant child canPost did not persist true: {caregiver_grant_child_post_payload}")
+
+        child_post_after_grant_payload = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/feed",
+            method="POST",
+            body={"body": "Child post after delegated permission grant"},
+            token=child_token,
+            expected_status=(200, 201),
+        )
+        child_post_after_grant = extract_object(
+            child_post_after_grant_payload, ["post"], "child post after delegated permission grant"
+        )
+        if child_post_after_grant.get("familyId") != shared_family_id:
+            fail(f"child post after delegated permission grant family mismatch: {child_post_after_grant_payload}")
+
+        caregiver_revoke_child_post_payload = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/members/{child_shared_member_id}/permissions",
+            method="PATCH",
+            body={"canPost": False},
+            token=caregiver_token,
+            expected_status=(200, 201),
+        )
+        child_member_post_revoked = assert_family_member_shape(
+            extract_object(caregiver_revoke_child_post_payload, ["member"], "caregiver revoke child canPost"),
+            "caregiver revoke child canPost response",
+        )
+        if child_member_post_revoked["permissions"].get("canPost") is not False:
+            fail(f"caregiver revoke child canPost did not persist false: {caregiver_revoke_child_post_payload}")
+
+        _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/feed",
+            method="POST",
+            body={"body": "Child post after delegated revoke should fail"},
+            token=child_token,
+            expected_status=403,
+        )
+
+        disable_caregiver_location_payload = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/members/{caregiver_shared_member_id}/permissions",
+            method="PATCH",
+            body={"canViewLocation": False},
+            token=token,
+            expected_status=(200, 201),
+        )
+        caregiver_member_location_disabled = assert_family_member_shape(
+            extract_object(disable_caregiver_location_payload, ["member"], "disable caregiver location view"),
+            "disable caregiver location view response",
+        )
+        if caregiver_member_location_disabled["permissions"].get("canViewLocation") is not False:
+            fail(
+                "parent update did not persist caregiver canViewLocation=false: "
+                f"{disable_caregiver_location_payload}"
+            )
+        if caregiver_member_location_disabled["permissions"].get("canManageMembers") is not True:
+            fail(
+                "caregiver canManageMembers should stay true when toggling canViewLocation: "
+                f"{disable_caregiver_location_payload}"
+            )
+
+        _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/locations",
+            token=caregiver_token,
+            expected_status=403,
+        )
+
+        enable_caregiver_location_payload = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/members/{caregiver_shared_member_id}/permissions",
+            method="PATCH",
+            body={"canViewLocation": True},
+            token=token,
+            expected_status=(200, 201),
+        )
+        caregiver_member_location_enabled = assert_family_member_shape(
+            extract_object(enable_caregiver_location_payload, ["member"], "enable caregiver location view"),
+            "enable caregiver location view response",
+        )
+        if caregiver_member_location_enabled["permissions"].get("canViewLocation") is not True:
+            fail(
+                "parent update did not persist caregiver canViewLocation=true: "
+                f"{enable_caregiver_location_payload}"
+            )
+
+        caregiver_locations_after_reenable_payload = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/locations",
+            token=caregiver_token,
+        )
+        caregiver_locations_after_reenable = extract_list(
+            caregiver_locations_after_reenable_payload,
+            ["locations"],
+            "caregiver shared-family locations after re-enable",
+        )
+        if not caregiver_locations_after_reenable:
+            fail(
+                "caregiver locations should be non-empty after re-enabling canViewLocation: "
+                f"{caregiver_locations_after_reenable_payload}"
+            )
+        if any(location.get("familyId") != shared_family_id for location in caregiver_locations_after_reenable):
+            fail(
+                "caregiver locations after re-enable leaked family ids: "
+                f"{caregiver_locations_after_reenable_payload}"
+            )
 
         shared_members_after_update_payload = request_json(
             f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/members",
@@ -1491,6 +1662,16 @@ def main() -> None:
         if caregiver_member_after_update["permissions"].get("canManageTasks") is not True:
             fail(
                 "shared-family members route did not reflect caregiver canManageTasks=true after grant: "
+                f"{shared_members_after_update_payload}"
+            )
+        if caregiver_member_after_update["permissions"].get("canManageMembers") is not True:
+            fail(
+                "shared-family members route did not reflect caregiver canManageMembers=true after delegation: "
+                f"{shared_members_after_update_payload}"
+            )
+        if caregiver_member_after_update["permissions"].get("canViewLocation") is not True:
+            fail(
+                "shared-family members route did not reflect caregiver canViewLocation=true after re-enable: "
                 f"{shared_members_after_update_payload}"
             )
         ok("permission updates are immediately enforced and reflected for existing tokens")

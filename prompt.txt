@@ -152,8 +152,12 @@ Write-path validation expectations:
   - parent on their non-shared secondary family must receive `403` for `PATCH /members/:memberId/permissions` due seeded `canManageMembers=false`.
   - parent in the shared family must receive `400` for invalid permission-update payloads (empty payload, unknown keys, non-boolean values).
   - parent in the shared family must receive `404` when patching a member id that belongs to a different family.
+  - partial permission updates must preserve unspecified permission fields (no implicit resets).
   - parent in the shared family can set caregiver `canPost=false`; caregiver's existing token must then get `403` on feed post create.
   - parent in the shared family can later set caregiver `canPost=true` and `canManageTasks=true`; caregiver's existing token must then succeed on feed post create and task create.
+  - parent can then set caregiver `canManageMembers=true`; caregiver's existing token must be able to update child permissions.
+  - after caregiver sets child `canPost=true`, child's existing token can create feed posts; after caregiver sets child `canPost=false`, the same token gets `403` on feed post create.
+  - parent can toggle caregiver `canViewLocation` false/true and caregiver's existing token must immediately lose/regain shared-family location-read access.
 - Location behavior:
   - parent and caregiver can read shared-family locations.
   - child receives `403` on shared-family locations.
