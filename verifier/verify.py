@@ -37,6 +37,26 @@ def run(command: list[str], cwd: Path, env: dict[str, str], timeout: int = 240) 
     return result
 
 
+def run_sql(sql: str, *, cwd: Path, env: dict[str, str], timeout: int = 120) -> None:
+    result = subprocess.run(
+        ["npx", "prisma", "db", "execute", "--stdin", "--schema", "prisma/schema.prisma"],
+        cwd=cwd,
+        env=env,
+        text=True,
+        input=sql,
+        capture_output=True,
+        timeout=timeout,
+        check=False,
+    )
+    if result.returncode != 0:
+        fail(
+            "sql execution failed via prisma db execute\n"
+            f"sql:\n{sql}\n"
+            f"stdout:\n{result.stdout}\n"
+            f"stderr:\n{result.stderr}"
+        )
+
+
 def request_json(
     url: str,
     *,
@@ -979,6 +999,58 @@ def main() -> None:
                 expected_status=403,
             )
         ok("forbidden-family writes are rejected with 403")
+
+        run_sql(
+            f"""
+UPDATE "FamilyMember"
+SET permissions = jsonb_build_object(
+  'canManageTasks', false,
+  'canViewLocation', true,
+  'canPost', false
+)
+WHERE "familyId" = '{shared_family_id}'
+  AND "userId" = (SELECT id FROM "User" WHERE email = 'caregiver@example.com');
+            """.strip(),
+            cwd=workspace,
+            env=env,
+        )
+        _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/feed",
+            method="POST",
+            body={"body": "Revoked caregiver post attempt"},
+            token=caregiver_token,
+            expected_status=403,
+        )
+        _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/feed/{caregiver_post_id}/comments",
+            method="POST",
+            body={"body": "Revoked caregiver comment attempt"},
+            token=caregiver_token,
+            expected_status=403,
+        )
+        _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/feed/{caregiver_post_id}/likes",
+            method="POST",
+            token=caregiver_token,
+            expected_status=403,
+        )
+        ok("authorization reflects canPost revocation after token issuance")
+
+        run_sql(
+            f"""
+DELETE FROM "FamilyMember"
+WHERE "familyId" = '{shared_family_id}'
+  AND "userId" = (SELECT id FROM "User" WHERE email = 'caregiver@example.com');
+            """.strip(),
+            cwd=workspace,
+            env=env,
+        )
+        _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/tasks",
+            token=caregiver_token,
+            expected_status=403,
+        )
+        ok("authorization reflects membership revocation after token issuance")
 
         print("VERIFICATION PASSED")
     finally:

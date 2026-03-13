@@ -89,6 +89,10 @@ Data and tenancy requirements:
 - Permission gates for family-scoped writes:
   - `canManageTasks` controls task create/update, event create, list create/item create, and reminder create.
   - `canPost` controls feed post create, feed comment create, and feed like create.
+- Authorization source of truth:
+  - Membership and permission authorization must be enforced from current database state, not only from JWT claims.
+  - If `canPost` is revoked in DB after login, the same token must lose post/comment/like access (`403`).
+  - If family membership is removed in DB after login, the same token must lose family access (`403`).
 - Location access gate:
   - `GET /locations` requires both membership `canViewLocation=true` and `family.locationSharingEnabled=true`.
   - Parent location reads on their non-shared secondary family should return `403` (seeded location-sharing-disabled path).
