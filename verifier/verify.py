@@ -591,7 +591,7 @@ def main() -> None:
         created_task_id = created_task.get("id")
         if not created_task_id:
             fail(f"create task did not return an id: {create_task_payload}")
-        if created_task.get("familyId") and created_task.get("familyId") != family_id:
+        if created_task.get("familyId") != family_id:
             fail(f"create task returned mismatched familyId: {create_task_payload}")
         ok("task creation route persists a new family task")
 
@@ -607,6 +607,8 @@ def main() -> None:
             fail(f"updated task id mismatch: {update_task_payload}")
         if updated_task.get("status") != "DONE":
             fail(f"updated task did not report DONE status: {update_task_payload}")
+        if updated_task.get("familyId") != family_id:
+            fail(f"updated task returned mismatched familyId: {update_task_payload}")
         ok("task status update route works")
 
         create_event_payload = request_json(
@@ -624,7 +626,7 @@ def main() -> None:
         created_event_id = created_event.get("id")
         if not created_event_id:
             fail(f"create event did not return an id: {create_event_payload}")
-        if created_event.get("familyId") and created_event.get("familyId") != family_id:
+        if created_event.get("familyId") != family_id:
             fail(f"create event returned mismatched familyId: {create_event_payload}")
         ok("event creation route persists a new family event")
 
@@ -639,7 +641,7 @@ def main() -> None:
         created_post_id = created_post.get("id")
         if not created_post_id:
             fail(f"create post did not return an id: {create_post_payload}")
-        if created_post.get("familyId") and created_post.get("familyId") != family_id:
+        if created_post.get("familyId") != family_id:
             fail(f"create post returned mismatched familyId: {create_post_payload}")
         ok("feed post creation route persists social content")
 
@@ -714,14 +716,19 @@ def main() -> None:
             fail(f"created task not found in task list after write: {tasks_after_payload}")
         if created_task_after.get("status") != "DONE":
             fail(f"created task status was not persisted as DONE: {tasks_after_payload}")
+        if created_task_after.get("familyId") != family_id:
+            fail(f"created task in follow-up read has mismatched familyId: {tasks_after_payload}")
 
         events_after_payload = request_json(
             f"http://127.0.0.1:3000/api/v1/families/{family_id}/events",
             token=token,
         )
         events_after = extract_list(events_after_payload, ["events"], "events after write")
-        if not any(event.get("id") == created_event_id for event in events_after):
+        created_event_after = next((event for event in events_after if event.get("id") == created_event_id), None)
+        if not created_event_after:
             fail(f"created event not found in event list after write: {events_after_payload}")
+        if created_event_after.get("familyId") != family_id:
+            fail(f"created event in follow-up read has mismatched familyId: {events_after_payload}")
 
         feed_after_payload = request_json(
             f"http://127.0.0.1:3000/api/v1/families/{family_id}/feed",
@@ -731,6 +738,8 @@ def main() -> None:
         created_post_after = next((post for post in posts_after if post.get("id") == created_post_id), None)
         if not created_post_after:
             fail(f"created post not found in feed after write: {feed_after_payload}")
+        if created_post_after.get("familyId") != family_id:
+            fail(f"created post in follow-up read has mismatched familyId: {feed_after_payload}")
         if created_post_after.get("commentCount", 0) < 1:
             fail(f"created post commentCount was not incremented: {feed_after_payload}")
         if created_post_after.get("likeCount", 0) < 1:
@@ -832,6 +841,8 @@ def main() -> None:
         caregiver_post_id = caregiver_post.get("id")
         if not caregiver_post_id:
             fail(f"caregiver post create did not return an id: {caregiver_post_payload}")
+        if caregiver_post.get("familyId") != shared_family_id:
+            fail(f"caregiver post create returned mismatched familyId: {caregiver_post_payload}")
 
         _ = request_json(
             f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/feed/{caregiver_post_id}/comments",
@@ -856,9 +867,61 @@ def main() -> None:
             expected_status=403,
         )
         _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/tasks/{caregiver_shared_task_id}",
+            method="PATCH",
+            body={"status": "DONE"},
+            token=child_token,
+            expected_status=403,
+        )
+        _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/events",
+            method="POST",
+            body={
+                "title": "Child unauthorized event",
+                "startsAt": "2026-06-02T09:00:00.000Z",
+                "endsAt": "2026-06-02T10:00:00.000Z",
+            },
+            token=child_token,
+            expected_status=403,
+        )
+        _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/lists",
+            method="POST",
+            body={"title": "Child unauthorized list"},
+            token=child_token,
+            expected_status=403,
+        )
+        _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/lists/{caregiver_shared_list_id}/items",
+            method="POST",
+            body={"label": "Child unauthorized list item"},
+            token=child_token,
+            expected_status=403,
+        )
+        _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/reminders",
+            method="POST",
+            body={"title": "Child unauthorized reminder", "scheduleText": "Daily 07:30"},
+            token=child_token,
+            expected_status=403,
+        )
+        _ = request_json(
             f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/feed",
             method="POST",
             body={"body": "Child unauthorized post"},
+            token=child_token,
+            expected_status=403,
+        )
+        _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/feed/{caregiver_post_id}/comments",
+            method="POST",
+            body={"body": "Child unauthorized comment"},
+            token=child_token,
+            expected_status=403,
+        )
+        _ = request_json(
+            f"http://127.0.0.1:3000/api/v1/families/{shared_family_id}/feed/{caregiver_post_id}/likes",
+            method="POST",
             token=child_token,
             expected_status=403,
         )
